@@ -23,6 +23,24 @@ namespace AudioMarkerReview.Services
 
         public static string Build(string originalText, IReadOnlyList<string> words, IReadOnlyList<int> boundariesMs)
         {
+            var insertions = ComputeInsertions(originalText, words, boundariesMs);
+            var sb = new StringBuilder(originalText);
+            // Insert from the highest offset down so earlier offsets stay valid.
+            for (int i = insertions.Count - 1; i >= 0; i--)
+                sb.Insert(insertions[i].Offset, insertions[i].Marker);
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// Returns, for the SAME originalText, the (character offset, "[ms]" marker
+        /// string) pairs that Build() would splice in — but as insertion points into
+        /// the ORIGINAL string rather than a rebuilt one. DocxScriptService uses this
+        /// to insert markers directly into the existing docx Text nodes so every
+        /// RunProperties (bold/italic/underline/shading/font) is left untouched.
+        /// </summary>
+        public static List<(int Offset, string Marker)> ComputeInsertions(
+            string originalText, IReadOnlyList<string> words, IReadOnlyList<int> boundariesMs)
+        {
             if (words.Count == 0)
                 throw new ArgumentException("No words to build markers from.");
             if (boundariesMs.Count != words.Count + 1)
@@ -30,41 +48,42 @@ namespace AudioMarkerReview.Services
                     $"boundariesMs must have {words.Count + 1} entries (words.Count + 1), got {boundariesMs.Count}.");
 
             var tokens = TokenRegex.Matches(originalText);
-            var sb = new StringBuilder();
+            var insertions = new List<(int Offset, string Marker)>();
             int wordIdx = 0;
+            int pos = 0;
 
             foreach (Match m in tokens)
             {
                 string tok = m.Value;
                 if (string.IsNullOrWhiteSpace(tok))
                 {
-                    sb.Append(tok);
+                    pos += tok.Length;
                     continue;
                 }
 
                 if (wordIdx >= words.Count)
                 {
                     // More non-space tokens in the raw text than aligned words —
-                    // text/words mismatch. Append as-is rather than crash; the
-                    // caller should already have validated counts before export.
-                    sb.Append(tok);
+                    // text/words mismatch. Skip rather than crash here; the count
+                    // check below reports it clearly once the whole pass is done.
+                    pos += tok.Length;
                     continue;
                 }
 
                 if (wordIdx == 0)
-                    sb.Append('[').Append(boundariesMs[0]).Append(']');
+                    insertions.Add((pos, $"[{boundariesMs[0]}]"));
 
-                sb.Append(tok);
-                sb.Append('[').Append(boundariesMs[wordIdx + 1]).Append(']');
+                pos += tok.Length;
+                insertions.Add((pos, $"[{boundariesMs[wordIdx + 1]}]"));
                 wordIdx++;
             }
 
             if (wordIdx != words.Count)
                 throw new InvalidOperationException(
                     $"Text/words mismatch: text has {wordIdx} whitespace-separated tokens but " +
-                    $"{words.Count} words were loaded. Re-check that the .txt file matches the draft JSON.");
+                    $"{words.Count} words were loaded. Re-check that the source text matches the draft JSON.");
 
-            return sb.ToString();
+            return insertions;
         }
 
         /// <summary>

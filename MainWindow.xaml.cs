@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Text.Json;
 using System.Windows;
@@ -8,6 +9,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Media;
 using Microsoft.Win32;
 using NAudio.Wave;
+using SoundTouch.Net.NAudioSupport;
 using AudioMarkerReview.Models;
 using AudioMarkerReview.Services;
 
@@ -23,8 +25,16 @@ namespace AudioMarkerReview
         private List<int> _boundariesMs = new();   // length == _words.Count + 1
         private List<double> _scores = new();      // length == _words.Count (0 = unknown/manual)
 
+        // ---- Word-document source (when the text came from a .docx track
+        // instead of a plain .txt file) --------------------------------------
+        private string? _docxSourcePath;
+        private int _docxTrackIndex = -1;
+        private List<DocxTrackInfo> _docxTracks = new();
+        private bool _suppressTrackSelectionEvent;
+
         // ---- playback ---------------------------------------------------------
         private AudioFileReader? _playbackReader;
+        private SoundTouchWaveProvider? _soundTouch; // wraps _playbackReader for pitch-preserving speed control
         private WaveOutEvent? _waveOut;
         private readonly DispatcherTimerWrapper _playbackTimer;
         private int _currentWordIndex = -1;
@@ -61,8 +71,12 @@ namespace AudioMarkerReview
                 _audioPath = dlg.FileName;
 
                 _playbackReader = new AudioFileReader(dlg.FileName);
+                _soundTouch = new SoundTouchWaveProvider(_playbackReader);
+                _soundTouch.OptimizeForSpeech();
+                ApplyCurrentSpeedSelection();
+
                 _waveOut = new WaveOutEvent();
-                _waveOut.Init(_playbackReader);
+                _waveOut.Init(_soundTouch);
                 _waveOut.PlaybackStopped += (_, _) => Dispatcher.Invoke(() => PlayPauseButton.Content = "Play");
 
                 PlayPauseButton.IsEnabled = true;
@@ -84,31 +98,103 @@ namespace AudioMarkerReview
 
             try
             {
-                _originalText = File.ReadAllText(dlg.FileName);
-                // If a draft JSON was already loaded, verify the text still matches it;
-                // otherwise this becomes manual mode using this text's own word list.
-                if (_words.Count > 0)
-                {
-                    var textWords = MarkerTextBuilder.SplitWords(_originalText);
-                    if (textWords.Count != _words.Count)
-                    {
-                        MessageBox.Show(this,
-                            $"This text file has {textWords.Count} words but the loaded draft JSON has " +
-                            $"{_words.Count}. Load the matching draft JSON, or load this text first and " +
-                            "skip the draft to start from evenly-spaced markers instead.",
-                            "Word count mismatch", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    }
-                }
-                EnsureBoundariesInitialized();
-                RebuildWaveform();
-                RebuildWordPanel();
-                UpdateStatus();
+                // Loading a plain .txt directly severs any prior association with a
+                // .docx track — "Export to Word" only makes sense when the text came
+                // from a docx track, since that's what carries the source path/table.
+                _docxSourcePath = null;
+                _docxTrackIndex = -1;
+                _docxTracks = new List<DocxTrackInfo>();
+                _suppressTrackSelectionEvent = true;
+                TrackComboBox.ItemsSource = null;
+                TrackComboBox.IsEnabled = false;
+                _suppressTrackSelectionEvent = false;
+
+                LoadOriginalText(File.ReadAllText(dlg.FileName));
             }
             catch (Exception ex)
             {
                 MessageBox.Show(this, $"Could not load text:\n{ex.Message}", "Error",
                     MessageBoxButton.OK, MessageBoxImage.Error);
             }
+        }
+
+        private void OpenDocxButton_Click(object sender, RoutedEventArgs e)
+        {
+            var dlg = new OpenFileDialog { Filter = "Word documents|*.docx|All files|*.*" };
+            if (dlg.ShowDialog() != true) return;
+
+            try
+            {
+                var tracks = DocxScriptService.ExtractTracks(dlg.FileName);
+                if (tracks.Count == 0)
+                {
+                    MessageBox.Show(this,
+                        "No qualifying audio-script table found in this document (needs a table with " +
+                        "at least 2 rows and a non-empty row 1, same as CustomLayoutGenerator expects).",
+                        "No tracks found", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                _docxSourcePath = dlg.FileName;
+                _docxTracks = tracks;
+
+                _suppressTrackSelectionEvent = true;
+                TrackComboBox.ItemsSource = _docxTracks;
+                TrackComboBox.SelectedIndex = 0;
+                TrackComboBox.IsEnabled = true;
+                _suppressTrackSelectionEvent = false;
+
+                LoadDocxTrack(0);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, $"Could not read Word document:\n{ex.Message}", "Error",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void TrackComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (_suppressTrackSelectionEvent || TrackComboBox.SelectedIndex < 0) return;
+            LoadDocxTrack(TrackComboBox.SelectedIndex);
+        }
+
+        private void LoadDocxTrack(int index)
+        {
+            _docxTrackIndex = index;
+            // Switching tracks means any previously loaded draft/boundaries belonged
+            // to the OTHER track's words — drop them rather than risk silently
+            // pairing track B's text with track A's timings.
+            _words = new List<string>();
+            _boundariesMs = new List<int>();
+            _scores = new List<double>();
+            LoadOriginalText(_docxTracks[index].FullText);
+        }
+
+        /// <summary>
+        /// Shared by both the .txt and .docx-track loading paths: validates against
+        /// an already-loaded draft (if any), falls back to evenly-spaced markers if
+        /// there's none yet, and refreshes the UI.
+        /// </summary>
+        private void LoadOriginalText(string text)
+        {
+            _originalText = text;
+            if (_words.Count > 0)
+            {
+                var textWords = MarkerTextBuilder.SplitWords(_originalText);
+                if (textWords.Count != _words.Count)
+                {
+                    MessageBox.Show(this,
+                        $"This text has {textWords.Count} words but the loaded draft JSON has " +
+                        $"{_words.Count}. Load the matching draft JSON, or continue to start from " +
+                        "evenly-spaced markers instead.",
+                        "Word count mismatch", MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
+            }
+            EnsureBoundariesInitialized();
+            RebuildWaveform();
+            RebuildWordPanel();
+            UpdateStatus();
         }
 
         private void LoadDraftButton_Click(object sender, RoutedEventArgs e)
@@ -338,7 +424,23 @@ namespace AudioMarkerReview
             if (_playbackReader == null || _audio == null) return;
             ms = Math.Max(0, Math.Min(ms, (int)(_audio.DurationSeconds * 1000)));
             _playbackReader.CurrentTime = TimeSpan.FromMilliseconds(ms);
+            _soundTouch?.Clear(); // flush internal time-stretch buffers so playback doesn't resume mid-stale-chunk
             UpdatePlayheadPosition(ms);
+        }
+
+        private void SpeedComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e) =>
+            ApplyCurrentSpeedSelection();
+
+        /// <summary>Reads the "1.25x" style text of the selected ComboBoxItem and applies
+        /// it as SoundTouch's Tempo (speed changes, pitch stays put — no chipmunk effect).</summary>
+        private void ApplyCurrentSpeedSelection()
+        {
+            if (_soundTouch == null) return;
+            if (SpeedComboBox.SelectedItem is ComboBoxItem item && item.Content is string label &&
+                double.TryParse(label.TrimEnd('x', 'X'), NumberStyles.Float, CultureInfo.InvariantCulture, out double speed))
+            {
+                _soundTouch.Tempo = speed;
+            }
         }
 
         private void PlaybackTimer_Tick()
@@ -385,6 +487,7 @@ namespace AudioMarkerReview
             _waveOut?.Stop();
             _waveOut?.Dispose();
             _waveOut = null;
+            _soundTouch = null; // no Dispose exposed — it holds no unmanaged resources of its own
             _playbackReader?.Dispose();
             _playbackReader = null;
         }
@@ -425,16 +528,49 @@ namespace AudioMarkerReview
             }
         }
 
+        private void ExportDocxButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (_docxSourcePath == null || _docxTrackIndex < 0)
+            {
+                MessageBox.Show(this, "Open a Word document (not a .txt file) first — this exports a new " +
+                    "copy of that same document with markers spliced into the track you're reviewing.",
+                    "Nothing to export", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+            try
+            {
+                var dlg = new SaveFileDialog
+                {
+                    Filter = "Word documents|*.docx",
+                    FileName = Path.GetFileNameWithoutExtension(_docxSourcePath) + "_markers.docx",
+                    InitialDirectory = Path.GetDirectoryName(_docxSourcePath),
+                };
+                if (dlg.ShowDialog() != true) return;
+
+                DocxScriptService.ExportWithMarkers(_docxSourcePath, _docxTrackIndex, _words, _boundariesMs, dlg.FileName);
+                StatusText.Text = $"Saved marked-up Word document to {dlg.FileName} " +
+                                   "(styles/formatting carried over untouched — only markers were added).";
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, ex.Message, "Export failed", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
         private void UpdateStatus()
         {
             bool ready = _audio != null && _words.Count > 0 && !string.IsNullOrEmpty(_originalText);
             CopyMarkersButton.IsEnabled = ready;
             SaveMarkersButton.IsEnabled = ready;
+            ExportDocxButton.IsEnabled = ready && _docxSourcePath != null;
 
             int lowConf = _scores.FindAll(s => s < -1.8).Count;
+            string sourceInfo = _docxSourcePath != null && _docxTrackIndex >= 0 && _docxTrackIndex < _docxTracks.Count
+                ? $"Word doc track: {_docxTracks[_docxTrackIndex].AudioTrackName}  |  "
+                : "";
             StatusText.Text = _audio == null
                 ? "No files loaded yet."
-                : $"Audio: {Path.GetFileName(_audioPath)} ({_audio.DurationSeconds:0.0}s)  |  " +
+                : $"{sourceInfo}Audio: {Path.GetFileName(_audioPath)} ({_audio.DurationSeconds:0.0}s)  |  " +
                   $"Words: {_words.Count}  |  Low-confidence: {lowConf}";
         }
     }
