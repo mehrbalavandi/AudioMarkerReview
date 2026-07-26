@@ -2,10 +2,12 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Input;
 using System.Windows.Media;
 using Microsoft.Win32;
 using NAudio.Wave;
@@ -47,6 +49,15 @@ namespace AudioMarkerReview
         private const double WaveHeight = 180;
         private readonly List<Thumb> _thumbs = new();
         private readonly List<Border> _wordChips = new();
+
+        // ---- marker multi-selection / batch shift ------------------------------
+        private readonly HashSet<int> _selectedMarkerIndices = new();
+        private int? _selectionAnchorIndex;
+        private bool _isGroupDrag;
+        private double _groupDragAccumulatedDeltaPx;
+        private double _groupDragLowerBoundPx;
+        private double _groupDragUpperBoundPx;
+        private readonly Dictionary<int, double> _groupDragStartLeftPx = new();
 
         public MainWindow()
         {
@@ -232,6 +243,8 @@ namespace AudioMarkerReview
                 _words = draft.Words;
                 _boundariesMs = draft.BoundariesMs;
                 _scores = draft.Scores;
+                _selectedMarkerIndices.Clear();
+                _selectionAnchorIndex = null;
 
                 RebuildWaveform();
                 RebuildWordPanel();
@@ -263,6 +276,8 @@ namespace AudioMarkerReview
             for (int i = 0; i <= _words.Count; i++)
                 _boundariesMs.Add((int)Math.Round(totalMs * (i / (double)_words.Count)));
             _scores = new List<double>(new double[_words.Count]); // all 0 => "unknown" grey chips
+            _selectedMarkerIndices.Clear();
+            _selectionAnchorIndex = null;
 
             RebuildWordPanel();
         }
@@ -297,9 +312,79 @@ namespace AudioMarkerReview
                 };
                 Canvas.SetTop(thumb, 0);
                 Canvas.SetLeft(thumb, MsToPixels(_boundariesMs[i]));
+                thumb.PreviewMouseLeftButtonDown += MarkerThumb_PreviewMouseLeftButtonDown;
+                thumb.DragStarted += MarkerThumb_DragStarted;
                 thumb.DragDelta += MarkerThumb_DragDelta;
                 MarkerCanvas.Children.Add(thumb);
                 _thumbs.Add(thumb);
+            }
+
+            // indices in _selectedMarkerIndices are still valid here (this method
+            // only replaces the visuals, never the boundaries array itself) — just
+            // repaint which thumbs should show as selected and refresh the buttons.
+            RefreshMarkerSelectionVisuals();
+        }
+
+        /// <summary>Ctrl+Click toggles one marker; Shift+Click selects the contiguous
+        /// range from the last-touched marker to this one. A plain click is left
+        /// alone here so the Thumb's own drag-start still fires normally.</summary>
+        private void MarkerThumb_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            int i = (int)((Thumb)sender).Tag;
+            var mods = Keyboard.Modifiers;
+
+            if (mods.HasFlag(ModifierKeys.Control))
+            {
+                if (!_selectedMarkerIndices.Remove(i))
+                    _selectedMarkerIndices.Add(i);
+                _selectionAnchorIndex = i;
+                RefreshMarkerSelectionVisuals();
+                e.Handled = true;
+            }
+            else if (mods.HasFlag(ModifierKeys.Shift) && _selectionAnchorIndex.HasValue)
+            {
+                int a = Math.Min(_selectionAnchorIndex.Value, i);
+                int b = Math.Max(_selectionAnchorIndex.Value, i);
+                _selectedMarkerIndices.Clear();
+                for (int k = a; k <= b; k++) _selectedMarkerIndices.Add(k);
+                RefreshMarkerSelectionVisuals();
+                e.Handled = true;
+            }
+            // else: plain click — handled by DragStarted below, not here.
+        }
+
+        /// <summary>Decides, once per drag gesture, whether this is a batch move
+        /// (dragging a marker that's part of a >1-marker selection) or the original
+        /// single-marker drag — and for batch mode, precomputes each selected
+        /// marker's start position plus the shared clamp range for the whole group.</summary>
+        private void MarkerThumb_DragStarted(object sender, DragStartedEventArgs e)
+        {
+            int i = (int)((Thumb)sender).Tag;
+
+            if (_selectedMarkerIndices.Contains(i) && _selectedMarkerIndices.Count > 1)
+            {
+                _isGroupDrag = true;
+                _groupDragAccumulatedDeltaPx = 0;
+                _groupDragStartLeftPx.Clear();
+                foreach (int idx in _selectedMarkerIndices)
+                    _groupDragStartLeftPx[idx] = MsToPixels(_boundariesMs[idx]);
+
+                int minSelected = _selectedMarkerIndices.Min();
+                int maxSelected = _selectedMarkerIndices.Max();
+                _groupDragLowerBoundPx = (minSelected > 0)
+                    ? MsToPixels(_boundariesMs[minSelected - 1]) + MinMarkerGapPixels : 0;
+                _groupDragUpperBoundPx = (maxSelected < _boundariesMs.Count - 1)
+                    ? MsToPixels(_boundariesMs[maxSelected + 1]) - MinMarkerGapPixels : WaveHostGrid.Width;
+            }
+            else
+            {
+                _isGroupDrag = false;
+                // Plain drag on a marker outside the current selection: that marker
+                // becomes the new (single) selection, same as clicking it alone would.
+                _selectedMarkerIndices.Clear();
+                _selectedMarkerIndices.Add(i);
+                _selectionAnchorIndex = i;
+                RefreshMarkerSelectionVisuals();
             }
         }
 
@@ -307,6 +392,22 @@ namespace AudioMarkerReview
         {
             var thumb = (Thumb)sender;
             int i = (int)thumb.Tag;
+
+            if (_isGroupDrag)
+            {
+                _groupDragAccumulatedDeltaPx += e.HorizontalChange;
+                double minAllowed = _groupDragLowerBoundPx - _groupDragStartLeftPx[_selectedMarkerIndices.Min()];
+                double maxAllowed = _groupDragUpperBoundPx - _groupDragStartLeftPx[_selectedMarkerIndices.Max()];
+                _groupDragAccumulatedDeltaPx = Math.Max(minAllowed, Math.Min(maxAllowed, _groupDragAccumulatedDeltaPx));
+
+                foreach (int idx in _selectedMarkerIndices)
+                {
+                    double left = _groupDragStartLeftPx[idx] + _groupDragAccumulatedDeltaPx;
+                    Canvas.SetLeft(_thumbs[idx], left);
+                    _boundariesMs[idx] = PixelsToMs(left);
+                }
+                return;
+            }
 
             double newLeft = Canvas.GetLeft(thumb) + e.HorizontalChange;
 
@@ -322,6 +423,64 @@ namespace AudioMarkerReview
 
         private double MsToPixels(int ms) => ms / 1000.0 * _pixelsPerSecond;
         private int PixelsToMs(double px) => (int)Math.Round(px / _pixelsPerSecond * 1000.0);
+
+        // =====================================================================
+        // Marker multi-selection / batch shift
+        // =====================================================================
+
+        private void RefreshMarkerSelectionVisuals()
+        {
+            for (int idx = 0; idx < _thumbs.Count; idx++)
+                _thumbs[idx].Style = (Style)FindResource(
+                    _selectedMarkerIndices.Contains(idx) ? "MarkerThumbSelectedStyle" : "MarkerThumbStyle");
+
+            bool hasSelection = _selectedMarkerIndices.Count > 0;
+            SelectionInfoText.Text = _selectedMarkerIndices.Count.ToString();
+            NudgeMinus50Button.IsEnabled = hasSelection;
+            NudgeMinus10Button.IsEnabled = hasSelection;
+            NudgePlus10Button.IsEnabled = hasSelection;
+            NudgePlus50Button.IsEnabled = hasSelection;
+            ClearSelectionButton.IsEnabled = hasSelection;
+        }
+
+        private void ClearSelectionButton_Click(object sender, RoutedEventArgs e)
+        {
+            _selectedMarkerIndices.Clear();
+            _selectionAnchorIndex = null;
+            RefreshMarkerSelectionVisuals();
+        }
+
+        private void NudgeMinus50Button_Click(object sender, RoutedEventArgs e) => NudgeSelection(-50);
+        private void NudgeMinus10Button_Click(object sender, RoutedEventArgs e) => NudgeSelection(-10);
+        private void NudgePlus10Button_Click(object sender, RoutedEventArgs e) => NudgeSelection(10);
+        private void NudgePlus50Button_Click(object sender, RoutedEventArgs e) => NudgeSelection(50);
+
+        /// <summary>Shifts every selected marker by the same requestedDeltaMs, clamped
+        /// as a whole group so the selection never crosses its nearest unselected
+        /// neighbor on either side (same guarantee the drag path gives).</summary>
+        private void NudgeSelection(int requestedDeltaMs)
+        {
+            if (_selectedMarkerIndices.Count == 0 || _boundariesMs.Count == 0) return;
+
+            int minSelected = _selectedMarkerIndices.Min();
+            int maxSelected = _selectedMarkerIndices.Max();
+            int lowerBoundMs = (minSelected > 0) ? _boundariesMs[minSelected - 1] + 1 : 0;
+            int upperBoundMs = (maxSelected < _boundariesMs.Count - 1)
+                ? _boundariesMs[maxSelected + 1] - 1
+                : (_audio != null ? (int)Math.Round(_audio.DurationSeconds * 1000) : int.MaxValue);
+
+            int delta = requestedDeltaMs;
+            if (delta < 0)
+                delta = Math.Max(delta, lowerBoundMs - _boundariesMs[minSelected]);
+            else if (delta > 0)
+                delta = Math.Min(delta, upperBoundMs - _boundariesMs[maxSelected]);
+            if (delta == 0) return;
+
+            foreach (int idx in _selectedMarkerIndices)
+                _boundariesMs[idx] += delta;
+
+            RebuildMarkers(); // repaints positions; selection itself is untouched
+        }
 
         private void ZoomInButton_Click(object sender, RoutedEventArgs e) => ChangeZoom(1.25);
         private void ZoomOutButton_Click(object sender, RoutedEventArgs e) => ChangeZoom(1 / 1.25);

@@ -14,6 +14,17 @@
                 </Setter.Value>
             </Setter>
         </Style>
+        <Style x:Key="MarkerThumbSelectedStyle" TargetType="Thumb">
+            <Setter Property="Width" Value="8"/>
+            <Setter Property="Cursor" Value="SizeWE"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Thumb">
+                        <Border Background="#CC2196F3" BorderBrush="#FF0D47A1" BorderThickness="1"/>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Window.Resources>
 
     <DockPanel>
@@ -46,9 +57,21 @@
                 <Button x:Name="SaveMarkersButton" Content="Save As .txt..." Click="SaveMarkersButton_Click" Padding="8,2" IsEnabled="False"/>
                 <Button x:Name="ExportDocxButton" Content="Export to Word (.docx)..." Click="ExportDocxButton_Click" Padding="8,2" IsEnabled="False"/>
             </ToolBar>
+            <ToolBar>
+                <TextBlock Text="Selected markers:" VerticalAlignment="Center" Margin="4,0,2,0"/>
+                <TextBlock x:Name="SelectionInfoText" Text="0" VerticalAlignment="Center" FontWeight="Bold" Margin="0,0,10,0" MinWidth="14"/>
+                <Button x:Name="NudgeMinus50Button" Content="◀ 50ms" Click="NudgeMinus50Button_Click" Padding="6,2" IsEnabled="False"/>
+                <Button x:Name="NudgeMinus10Button" Content="◀ 10ms" Click="NudgeMinus10Button_Click" Padding="6,2" IsEnabled="False"/>
+                <Button x:Name="NudgePlus10Button" Content="10ms ▶" Click="NudgePlus10Button_Click" Padding="6,2" IsEnabled="False"/>
+                <Button x:Name="NudgePlus50Button" Content="50ms ▶" Click="NudgePlus50Button_Click" Padding="6,2" IsEnabled="False"/>
+                <Separator/>
+                <Button x:Name="ClearSelectionButton" Content="Clear Selection" Click="ClearSelectionButton_Click" Padding="6,2" IsEnabled="False"/>
+            </ToolBar>
         </ToolBarTray>
 
-        <TextBlock x:Name="StatusText" DockPanel.Dock="Top" Margin="8,4" Text="No files loaded yet." Foreground="#555" TextWrapping="Wrap"/>
+        <TextBlock x:Name="StatusText" DockPanel.Dock="Top" Margin="8,4,8,0" Text="No files loaded yet." Foreground="#555" TextWrapping="Wrap"/>
+        <TextBlock DockPanel.Dock="Top" Margin="8,0,8,4" FontStyle="Italic" Foreground="#888" TextWrapping="Wrap"
+                   Text="Tip: Ctrl+Click a marker to multi-select, Shift+Click to select a range, then drag any selected marker (or use the ms buttons above) to move the whole group together."/>
 
         <Border DockPanel.Dock="Bottom" BorderBrush="#DDD" BorderThickness="0,1,0,0" Height="230">
             <ScrollViewer x:Name="WordsScrollViewer" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="6">
