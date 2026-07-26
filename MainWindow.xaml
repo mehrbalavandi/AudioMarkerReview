@@ -50,6 +50,9 @@
                     <ComboBoxItem Content="2.0x"/>
                 </ComboBox>
                 <Separator/>
+                <Button x:Name="UndoButton" Content="Undo" Click="UndoButton_Click" Padding="8,2" IsEnabled="False" ToolTip="Ctrl+Z"/>
+                <Button x:Name="RedoButton" Content="Redo" Click="RedoButton_Click" Padding="8,2" IsEnabled="False" ToolTip="Ctrl+Y"/>
+                <Separator/>
                 <Button x:Name="ZoomOutButton" Content="Zoom −" Click="ZoomOutButton_Click" Padding="8,2"/>
                 <Button x:Name="ZoomInButton" Content="Zoom +" Click="ZoomInButton_Click" Padding="8,2"/>
                 <Separator/>

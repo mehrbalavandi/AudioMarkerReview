@@ -59,11 +59,24 @@ namespace AudioMarkerReview
         private double _groupDragUpperBoundPx;
         private readonly Dictionary<int, double> _groupDragStartLeftPx = new();
 
+        // ---- undo / redo (boundariesMs snapshots, one per completed edit) ------
+        private readonly Stack<List<int>> _undoStack = new();
+        private readonly Stack<List<int>> _redoStack = new();
+        private const int MaxUndoDepth = 100;
+
         public MainWindow()
         {
             InitializeComponent();
             _playbackTimer = new DispatcherTimerWrapper(TimeSpan.FromMilliseconds(50), PlaybackTimer_Tick);
             Closing += (_, _) => CleanupPlayback();
+            PreviewKeyDown += MainWindow_PreviewKeyDown;
+        }
+
+        private void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            if (Keyboard.Modifiers != ModifierKeys.Control) return;
+            if (e.Key == Key.Z && UndoButton.IsEnabled) { Undo(); e.Handled = true; }
+            else if (e.Key == Key.Y && RedoButton.IsEnabled) { Redo(); e.Handled = true; }
         }
 
         // =====================================================================
@@ -245,6 +258,7 @@ namespace AudioMarkerReview
                 _scores = draft.Scores;
                 _selectedMarkerIndices.Clear();
                 _selectionAnchorIndex = null;
+                ResetUndoHistory();
 
                 RebuildWaveform();
                 RebuildWordPanel();
@@ -278,6 +292,7 @@ namespace AudioMarkerReview
             _scores = new List<double>(new double[_words.Count]); // all 0 => "unknown" grey chips
             _selectedMarkerIndices.Clear();
             _selectionAnchorIndex = null;
+            ResetUndoHistory();
 
             RebuildWordPanel();
         }
@@ -360,6 +375,7 @@ namespace AudioMarkerReview
         private void MarkerThumb_DragStarted(object sender, DragStartedEventArgs e)
         {
             int i = (int)((Thumb)sender).Tag;
+            PushUndoSnapshot(); // one snapshot per gesture, whether it ends up single or group
 
             if (_selectedMarkerIndices.Contains(i) && _selectedMarkerIndices.Count > 1)
             {
@@ -476,10 +492,73 @@ namespace AudioMarkerReview
                 delta = Math.Min(delta, upperBoundMs - _boundariesMs[maxSelected]);
             if (delta == 0) return;
 
+            PushUndoSnapshot();
             foreach (int idx in _selectedMarkerIndices)
                 _boundariesMs[idx] += delta;
 
             RebuildMarkers(); // repaints positions; selection itself is untouched
+        }
+
+        // =====================================================================
+        // Undo / redo
+        // =====================================================================
+
+        /// <summary>Call BEFORE applying an edit that's actually going to change
+        /// _boundariesMs (drag start, or a nudge that survived clamping) — records
+        /// what to go back to and clears the now-stale redo history.</summary>
+        private void PushUndoSnapshot()
+        {
+            _undoStack.Push(new List<int>(_boundariesMs));
+            if (_undoStack.Count > MaxUndoDepth)
+            {
+                var kept = _undoStack.ToArray(); // top (most recent) first
+                _undoStack.Clear();
+                for (int k = kept.Length - 2; k >= 0; k--) // drop the oldest one
+                    _undoStack.Push(kept[k]);
+            }
+            _redoStack.Clear();
+            UpdateUndoRedoButtons();
+        }
+
+        /// <summary>Wholesale-replacing _boundariesMs (new draft/track/fallback
+        /// regeneration) makes prior undo/redo history meaningless — call this
+        /// alongside clearing marker selection at those same points.</summary>
+        private void ResetUndoHistory()
+        {
+            _undoStack.Clear();
+            _redoStack.Clear();
+            UpdateUndoRedoButtons();
+        }
+
+        private void Undo()
+        {
+            if (_undoStack.Count == 0) return;
+            _redoStack.Push(new List<int>(_boundariesMs));
+            _boundariesMs = _undoStack.Pop();
+            _selectedMarkerIndices.Clear();
+            _selectionAnchorIndex = null;
+            RebuildMarkers();
+            UpdateUndoRedoButtons();
+        }
+
+        private void Redo()
+        {
+            if (_redoStack.Count == 0) return;
+            _undoStack.Push(new List<int>(_boundariesMs));
+            _boundariesMs = _redoStack.Pop();
+            _selectedMarkerIndices.Clear();
+            _selectionAnchorIndex = null;
+            RebuildMarkers();
+            UpdateUndoRedoButtons();
+        }
+
+        private void UndoButton_Click(object sender, RoutedEventArgs e) => Undo();
+        private void RedoButton_Click(object sender, RoutedEventArgs e) => Redo();
+
+        private void UpdateUndoRedoButtons()
+        {
+            UndoButton.IsEnabled = _undoStack.Count > 0;
+            RedoButton.IsEnabled = _redoStack.Count > 0;
         }
 
         private void ZoomInButton_Click(object sender, RoutedEventArgs e) => ChangeZoom(1.25);
