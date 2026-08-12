@@ -8,7 +8,12 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>AudioMarkerReview</AssemblyName>
     <RootNamespace>AudioMarkerReview</RootNamespace>
+    <ApplicationIcon>AudioMarkerReview.ico</ApplicationIcon>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="AudioMarkerReview.ico" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="NAudio" Version="2.3.0" />
