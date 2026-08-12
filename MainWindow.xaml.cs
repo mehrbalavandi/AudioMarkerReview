@@ -34,6 +34,8 @@ namespace AudioMarkerReview
         private List<DocxTrackInfo> _docxTracks = new();
         private bool _suppressTrackSelectionEvent;
         private string _trackMatchNote = "";   // how the current track got picked, for the status bar
+        private bool _autoMatchEnabled = true; // mirrors AutoMatchCheckBox, kept as a plain field so
+                                               // the matching logic never touches a XAML-generated name
 
         // ---- playback ---------------------------------------------------------
         private AudioFileReader? _playbackReader;
@@ -197,10 +199,12 @@ namespace AudioMarkerReview
 
         private void AutoMatchCheckBox_Changed(object sender, RoutedEventArgs e)
         {
-            // XAML sets IsChecked before the rest of the window exists — ignore that one.
+            // Read the state off the sender rather than the x:Name field: this handler runs
+            // once while the XAML is still being parsed, before the generated field is assigned.
+            _autoMatchEnabled = sender is CheckBox box && box.IsChecked == true;
             if (!IsLoaded) return;
 
-            if (AutoMatchCheckBox.IsChecked == true) TryAutoSelectTrackForAudio(announce: false);
+            if (_autoMatchEnabled) TryAutoSelectTrackForAudio(announce: false);
             else _trackMatchNote = "auto-match off";
             UpdateStatus();
         }
@@ -214,7 +218,7 @@ namespace AudioMarkerReview
         private bool TryAutoSelectTrackForAudio(bool announce)
         {
             if (_docxTracks.Count == 0 || string.IsNullOrEmpty(_audioPath)) return false;
-            if (AutoMatchCheckBox.IsChecked != true)
+            if (!_autoMatchEnabled)
             {
                 _trackMatchNote = "auto-match off";
                 return false;
