@@ -15,6 +15,11 @@ namespace AudioMarkerReview.Services
         public int TrackIndex { get; set; }       // position among qualifying tables, in document order
         public string AudioTrackName { get; set; } = "";
         public string FullText { get; set; } = ""; // row[1]'s flattened text — same words/order MarkerTextBuilder expects
+        public int WordCount { get; set; }        // words in FullText, shown in the track picker
+
+        /// <summary>Label shown in the Track combo box.</summary>
+        public string Display =>
+            $"{TrackIndex + 1}. {AudioTrackName}" + (WordCount > 0 ? $"  ({WordCount} words)" : "");
     }
 
     /// <summary>
@@ -44,7 +49,13 @@ namespace AudioMarkerReview.Services
                 var rows = table.Elements<TableRow>().ToList();
                 string trackName = rows[0].InnerText.Trim();
                 string fullText = FlattenRow1Text(rows[1], out _);
-                tracks.Add(new DocxTrackInfo { TrackIndex = index, AudioTrackName = trackName, FullText = fullText });
+                tracks.Add(new DocxTrackInfo
+                {
+                    TrackIndex = index,
+                    AudioTrackName = trackName,
+                    FullText = fullText,
+                    WordCount = MarkerTextBuilder.SplitWords(fullText).Count
+                });
                 index++;
             }
             return tracks;
@@ -55,8 +66,13 @@ namespace AudioMarkerReview.Services
         /// into the same track's row[1] runs. words/boundariesMs must be the reviewed/corrected
         /// values (boundariesMs.Count == words.Count + 1, see MarkerTextBuilder).
         /// </summary>
+        /// <param name="expectedTrackName">Optional guard for multi-table documents: the row[0]
+        /// caption the caller believes sits at <paramref name="trackIndex"/>. If the document was
+        /// edited between loading and exporting (a table added, removed or reordered), the index
+        /// would silently point at a different track — this turns that into an error instead.</param>
         public static void ExportWithMarkers(string sourcePath, int trackIndex,
-            IReadOnlyList<string> words, IReadOnlyList<int> boundariesMs, string destPath)
+            IReadOnlyList<string> words, IReadOnlyList<int> boundariesMs, string destPath,
+            string? expectedTrackName = null)
         {
             if (!string.Equals(Path.GetFullPath(sourcePath), Path.GetFullPath(destPath), StringComparison.OrdinalIgnoreCase))
                 File.Copy(sourcePath, destPath, overwrite: true);
@@ -73,6 +89,16 @@ namespace AudioMarkerReview.Services
                     $"Track index {trackIndex} no longer exists in this document ({qualifying.Count} qualifying table(s) found).");
 
             var rows = qualifying[trackIndex].Elements<TableRow>().ToList();
+
+            if (expectedTrackName != null)
+            {
+                string actualName = rows[0].InnerText.Trim();
+                if (!string.Equals(actualName, expectedTrackName.Trim(), StringComparison.Ordinal))
+                    throw new InvalidOperationException(
+                        $"Table {trackIndex + 1} is now \"{actualName}\" but you reviewed \"{expectedTrackName}\". " +
+                        "The document changed since you opened it — re-open it in the review tool and try again.");
+            }
+
             string fullText = FlattenRow1Text(rows[1], out var textRuns);
 
             var freshWords = MarkerTextBuilder.SplitWords(fullText);

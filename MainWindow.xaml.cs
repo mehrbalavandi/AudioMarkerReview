@@ -33,6 +33,7 @@ namespace AudioMarkerReview
         private int _docxTrackIndex = -1;
         private List<DocxTrackInfo> _docxTracks = new();
         private bool _suppressTrackSelectionEvent;
+        private string _trackMatchNote = "";   // how the current track got picked, for the status bar
 
         // ---- playback ---------------------------------------------------------
         private AudioFileReader? _playbackReader;
@@ -104,6 +105,11 @@ namespace AudioMarkerReview
                 _waveOut.PlaybackStopped += (_, _) => Dispatcher.Invoke(() => PlayPauseButton.Content = "Play");
 
                 PlayPauseButton.IsEnabled = true;
+
+                // A document can hold many tracks — now that we know which audio file is
+                // being reviewed, jump to the table whose caption names it.
+                TryAutoSelectTrackForAudio(announce: true);
+
                 EnsureBoundariesInitialized();
                 RebuildWaveform();
                 UpdateStatus();
@@ -128,6 +134,7 @@ namespace AudioMarkerReview
                 _docxSourcePath = null;
                 _docxTrackIndex = -1;
                 _docxTracks = new List<DocxTrackInfo>();
+                _trackMatchNote = "";
                 _suppressTrackSelectionEvent = true;
                 TrackComboBox.ItemsSource = null;
                 TrackComboBox.IsEnabled = false;
@@ -161,14 +168,18 @@ namespace AudioMarkerReview
 
                 _docxSourcePath = dlg.FileName;
                 _docxTracks = tracks;
+                _trackMatchNote = "";
+                _docxTrackIndex = -1;   // an index from the previous document means nothing here
 
                 _suppressTrackSelectionEvent = true;
                 TrackComboBox.ItemsSource = _docxTracks;
-                TrackComboBox.SelectedIndex = 0;
                 TrackComboBox.IsEnabled = true;
                 _suppressTrackSelectionEvent = false;
 
-                LoadDocxTrack(0);
+                // If an audio file is already open, land on ITS table instead of the first
+                // one; otherwise show track 1 and re-match as soon as audio arrives.
+                if (!TryAutoSelectTrackForAudio(announce: true))
+                    SelectTrack(0);
             }
             catch (Exception ex)
             {
@@ -180,7 +191,79 @@ namespace AudioMarkerReview
         private void TrackComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             if (_suppressTrackSelectionEvent || TrackComboBox.SelectedIndex < 0) return;
+            _trackMatchNote = "chosen manually";
             LoadDocxTrack(TrackComboBox.SelectedIndex);
+        }
+
+        private void AutoMatchCheckBox_Changed(object sender, RoutedEventArgs e)
+        {
+            // XAML sets IsChecked before the rest of the window exists — ignore that one.
+            if (!IsLoaded) return;
+
+            if (AutoMatchCheckBox.IsChecked == true) TryAutoSelectTrackForAudio(announce: false);
+            else _trackMatchNote = "auto-match off";
+            UpdateStatus();
+        }
+
+        /// <summary>
+        /// Picks the .docx table whose row[0] caption best names the currently loaded audio
+        /// file, and loads it. Returns true when a track ended up selected, so the caller
+        /// knows whether it still has to fall back to track 1. Does nothing when there is no
+        /// audio yet, no document yet, or auto-match is switched off.
+        /// </summary>
+        private bool TryAutoSelectTrackForAudio(bool announce)
+        {
+            if (_docxTracks.Count == 0 || string.IsNullOrEmpty(_audioPath)) return false;
+            if (AutoMatchCheckBox.IsChecked != true)
+            {
+                _trackMatchNote = "auto-match off";
+                return false;
+            }
+
+            var match = TrackMatcher.Match(_audioPath!, _docxTracks);
+            if (match.Index < 0) return false;
+
+            if (match.IsConfident)
+            {
+                _trackMatchNote = $"auto-matched {match.Score:P0}";
+            }
+            else
+            {
+                _trackMatchNote = $"UNCERTAIN match {match.Score:P0} — check the Track list";
+                if (announce)
+                    MessageBox.Show(this,
+                        $"Couldn't confidently tell which table belongs to \"{Path.GetFileName(_audioPath)}\".\n" +
+                        $"Reason: {match.Reason}.\n\n" +
+                        BuildCandidateList(match) + "\n" +
+                        "The closest one has been selected — use the Track list to correct it if that's wrong.",
+                        "Track match uncertain", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+
+            // Already on the right track: leave the loaded words/markers alone so that
+            // re-opening the same audio doesn't throw away the edits made so far.
+            if (match.Index == _docxTrackIndex) return true;
+
+            SelectTrack(match.Index);
+            return true;
+        }
+
+        /// <summary>Moves the combo box AND loads the track, without the selection event
+        /// firing back and stamping the choice as "manual".</summary>
+        private void SelectTrack(int index)
+        {
+            if (index < 0 || index >= _docxTracks.Count) return;
+            _suppressTrackSelectionEvent = true;
+            TrackComboBox.SelectedIndex = index;
+            _suppressTrackSelectionEvent = false;
+            LoadDocxTrack(index);
+        }
+
+        private string BuildCandidateList(TrackMatchResult match)
+        {
+            var sb = new System.Text.StringBuilder("Closest tables:\n");
+            foreach (var (index, score) in match.Ranked.Take(3))
+                sb.AppendLine($"   {score:P0}  —  {_docxTracks[index].Display}");
+            return sb.ToString();
         }
 
         private void LoadDocxTrack(int index)
@@ -785,7 +868,8 @@ namespace AudioMarkerReview
                 };
                 if (dlg.ShowDialog() != true) return;
 
-                DocxScriptService.ExportWithMarkers(_docxSourcePath, _docxTrackIndex, _words, _boundariesMs, dlg.FileName);
+                DocxScriptService.ExportWithMarkers(_docxSourcePath, _docxTrackIndex, _words, _boundariesMs, dlg.FileName,
+                    expectedTrackName: _docxTracks[_docxTrackIndex].AudioTrackName);
                 StatusText.Text = $"Saved marked-up Word document to {dlg.FileName} " +
                                    "(styles/formatting carried over untouched — only markers were added).";
             }
@@ -804,7 +888,8 @@ namespace AudioMarkerReview
 
             int lowConf = _scores.FindAll(s => s < -1.8).Count;
             string sourceInfo = _docxSourcePath != null && _docxTrackIndex >= 0 && _docxTrackIndex < _docxTracks.Count
-                ? $"Word doc track: {_docxTracks[_docxTrackIndex].AudioTrackName}  |  "
+                ? $"Word doc track {_docxTrackIndex + 1}/{_docxTracks.Count}: {_docxTracks[_docxTrackIndex].AudioTrackName}" +
+                  (string.IsNullOrEmpty(_trackMatchNote) ? "" : $" [{_trackMatchNote}]") + "  |  "
                 : "";
             StatusText.Text = _audio == null
                 ? "No files loaded yet."
