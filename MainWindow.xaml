@@ -30,10 +30,10 @@
     <DockPanel>
         <ToolBarTray DockPanel.Dock="Top">
             <ToolBar>
-                <Button x:Name="OpenAudioButton" Content="Open Audio..." Click="OpenAudioButton_Click" Padding="8,2"/>
-                <Button x:Name="OpenDocxButton" Content="Open Word Document..." Click="OpenDocxButton_Click" Padding="8,2"/>
-                <Button x:Name="OpenTextButton" Content="Open Text (.txt)..." Click="OpenTextButton_Click" Padding="8,2"/>
-                <Button x:Name="LoadDraftButton" Content="Load Draft JSON..." Click="LoadDraftButton_Click" Padding="8,2"/>
+                <Button x:Name="OpenAudioButton" Content="Audio" Click="OpenAudioButton_Click" Padding="8,2"/>
+                <Button x:Name="OpenDocxButton" Content="Word" Click="OpenDocxButton_Click" Padding="8,2"/>
+                <Button x:Name="OpenTextButton" Content="(.txt)" Click="OpenTextButton_Click" Padding="8,2"/>
+                <Button x:Name="LoadDraftButton" Content="Draft JSON" Click="LoadDraftButton_Click" Padding="8,2"/>
                 <TextBlock Text="Track:" VerticalAlignment="Center" Margin="8,0,2,0"/>
                 <ComboBox x:Name="TrackComboBox" Width="280" DisplayMemberPath="Display"
                           SelectionChanged="TrackComboBox_SelectionChanged" IsEnabled="False"
@@ -44,9 +44,10 @@
                           ToolTip="Pick the table whose first-row name matches the audio file name (e.g. Test3_S2.mp3 → &quot;Test 3 - Section 2&quot;)."/>
             </ToolBar>
             <ToolBar>
+                <Button x:Name="ExportDocxButton" Content="To Word (.docx)" Click="ExportDocxButton_Click" Padding="8,2" IsEnabled="True"/>
                 <Button x:Name="PlayPauseButton" Content="Play" Click="PlayPauseButton_Click" Width="60" IsEnabled="False"/>
                 <TextBlock Text="Speed:" VerticalAlignment="Center" Margin="8,0,2,0"/>
-                <ComboBox x:Name="SpeedComboBox" Width="70" SelectionChanged="SpeedComboBox_SelectionChanged" SelectedIndex="2">
+                <ComboBox x:Name="SpeedComboBox" Width="50" SelectionChanged="SpeedComboBox_SelectionChanged" SelectedIndex="2">
                     <ComboBoxItem Content="0.5x"/>
                     <ComboBoxItem Content="0.75x"/>
                     <ComboBoxItem Content="1.0x"/>
@@ -63,7 +64,6 @@
                 <Separator/>
                 <Button x:Name="CopyMarkersButton" Content="Copy Marker Text" Click="CopyMarkersButton_Click" Padding="8,2" IsEnabled="False"/>
                 <Button x:Name="SaveMarkersButton" Content="Save As .txt..." Click="SaveMarkersButton_Click" Padding="8,2" IsEnabled="False"/>
-                <Button x:Name="ExportDocxButton" Content="Export to Word (.docx)..." Click="ExportDocxButton_Click" Padding="8,2" IsEnabled="False"/>
             </ToolBar>
             <ToolBar>
                 <TextBlock Text="Selected markers:" VerticalAlignment="Center" Margin="4,0,2,0"/>

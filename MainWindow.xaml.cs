@@ -156,9 +156,18 @@ namespace AudioMarkerReview
             var dlg = new OpenFileDialog { Filter = "Word documents|*.docx|All files|*.*" };
             if (dlg.ShowDialog() != true) return;
 
+
+            string originalFile = dlg.FileName;
+            // ساخت فایل موقت
+            string tempFile = Path.Combine(
+                Path.GetTempPath(),
+                Guid.NewGuid().ToString() + Path.GetExtension(originalFile));
+            File.Copy(originalFile, tempFile, true);
+
             try
             {
-                var tracks = DocxScriptService.ExtractTracks(dlg.FileName);
+
+                var tracks = DocxScriptService.ExtractTracks(tempFile);
                 if (tracks.Count == 0)
                 {
                     MessageBox.Show(this,
@@ -187,6 +196,15 @@ namespace AudioMarkerReview
             {
                 MessageBox.Show(this, $"Could not read Word document:\n{ex.Message}", "Error",
                     MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+
+            finally
+            {
+                // حذف فایل موقت
+                if (File.Exists(tempFile))
+                {
+                    File.Delete(tempFile);
+                }
             }
         }
 
