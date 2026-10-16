@@ -44,7 +44,8 @@
                           ToolTip="Pick the table whose first-row name matches the audio file name (e.g. Test3_S2.mp3 → &quot;Test 3 - Section 2&quot;)."/>
             </ToolBar>
             <ToolBar>
-                <Button x:Name="ExportDocxButton" Content="To Word (.docx)" Click="ExportDocxButton_Click" Padding="8,2" IsEnabled="True"/>
+                <Button x:Name="ExportDocxButton" Content="To Word (.docx)" Click="ExportDocxButton_Click" Padding="8,2" IsEnabled="True"
+                        ToolTip="Writes this track's markers into &lt;document&gt;_markers.docx and keeps every other table (and its markers) as it is. Shift+click to choose another file."/>
                 <Button x:Name="PlayPauseButton" Content="Play" Click="PlayPauseButton_Click" Width="60" IsEnabled="False"/>
                 <TextBlock Text="Speed:" VerticalAlignment="Center" Margin="8,0,2,0"/>
                 <ComboBox x:Name="SpeedComboBox" Width="50" SelectionChanged="SpeedComboBox_SelectionChanged" SelectedIndex="2">

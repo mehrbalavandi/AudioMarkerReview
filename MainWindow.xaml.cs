@@ -37,6 +37,13 @@ namespace AudioMarkerReview
         private bool _autoMatchEnabled = true; // mirrors AutoMatchCheckBox, kept as a plain field so
                                                // the matching logic never touches a XAML-generated name
 
+        // 🌟 سندی که «To Word» مارکرها را در آن می‌نویسد (پیش‌فرض: ‎<نامِ سند>_markers.docx کنارِ سند؛
+        // اگر خودِ سندِ _markers باز شده، همان). هر بار فقط جدولِ همین ترک عوض می‌شود.
+        private string? _docxTargetPath;
+        private List<DocxTrackInfo> _targetTracks = new();
+        private string _targetNote = "";       // وضعیتِ سندِ مقصد برای نوارِ وضعیت
+        private bool _reviewedMarkersLoaded;   // مارکرهای این ترک از سندِ مقصد آمده‌اند؛ پیش‌نویس رویشان نمی‌نشیند
+
         // ---- playback ---------------------------------------------------------
         private AudioFileReader? _playbackReader;
         private SoundTouchWaveProvider? _soundTouch; // wraps _playbackReader for pitch-preserving speed control
@@ -141,6 +148,10 @@ namespace AudioMarkerReview
                 _docxSourcePath = null;
                 _docxTrackIndex = -1;
                 _docxTracks = new List<DocxTrackInfo>();
+                _docxTargetPath = null;
+                _targetTracks = new List<DocxTrackInfo>();
+                _targetNote = "";
+                _reviewedMarkersLoaded = false;
                 _trackMatchNote = "";
                 _suppressTrackSelectionEvent = true;
                 TrackComboBox.ItemsSource = null;
@@ -187,6 +198,10 @@ namespace AudioMarkerReview
                 _docxTracks = tracks;
                 _trackMatchNote = "";
                 _docxTrackIndex = -1;   // an index from the previous document means nothing here
+
+                // 🌟 مقصدِ «To Word» و مارکرهایی که قبلاً در آن نوشته شده‌اند
+                _docxTargetPath = DefaultTargetFor(dlg.FileName);
+                RefreshTargetTracks();
 
                 _suppressTrackSelectionEvent = true;
                 TrackComboBox.ItemsSource = _docxTracks;
@@ -306,7 +321,83 @@ namespace AudioMarkerReview
             _boundariesMs = new List<int>();
             _scores = new List<double>();
             _draftNote = "";
-            LoadOriginalText(_docxTracks[index].FullText);
+            _reviewedMarkersLoaded = false;
+
+            // 🌟 ترکی که قبلاً بازبینی و در سندِ مقصد نوشته شده، با همان مارکرها باز می‌شود
+            // (نه با پیش‌نویسِ align_engine و نه با مارکرهای یکنواخت).
+            var track = _docxTracks[index];
+            var reviewed = track.ReviewedBoundariesMs;
+            if (reviewed != null)
+            {
+                var words = MarkerTextBuilder.SplitWords(track.FullText);
+                if (reviewed.Count == words.Count + 1)
+                {
+                    _words = words;
+                    _boundariesMs = new List<int>(reviewed);
+                    _scores = new List<double>(new double[words.Count]);
+                    _selectedMarkerIndices.Clear();
+                    _selectionAnchorIndex = null;
+                    ResetUndoHistory();
+                    _reviewedMarkersLoaded = true;
+                    _draftNote = $"reviewed markers from {Path.GetFileName(_docxTargetPath)}";
+                }
+            }
+            LoadOriginalText(track.FullText);
+        }
+
+        /// <summary>🌟 ‎«X.docx» ← «X_markers.docx»؛ اگر خودِ سندِ _markers باز شده، همان.</summary>
+        private static string DefaultTargetFor(string docxPath)
+        {
+            string stem = Path.GetFileNameWithoutExtension(docxPath);
+            if (stem.EndsWith("_markers", StringComparison.OrdinalIgnoreCase)) return docxPath;
+            return Path.Combine(Path.GetDirectoryName(docxPath) ?? "", stem + "_markers.docx");
+        }
+
+        private bool TargetIsSource =>
+            _docxTargetPath != null && _docxSourcePath != null &&
+            string.Equals(Path.GetFullPath(_docxTargetPath), Path.GetFullPath(_docxSourcePath), StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// 🌟 سندِ مقصد را (اگر هست) می‌خواند و برای هر ترکِ سندِ باز‌شده مشخص می‌کند که آن‌جا
+        /// مارکرِ کامل دارد یا نه — هم برای علامتِ ✓ در فهرستِ ترک‌ها و هم برای باز کردنِ ترک با
+        /// مارکرهای بازبینی‌شده. ترک با نام (و در صورتِ تکرارِ نام، با شماره) پیدا می‌شود.
+        /// </summary>
+        private void RefreshTargetTracks()
+        {
+            _targetTracks = new List<DocxTrackInfo>();
+            _targetNote = "";
+            if (_docxTargetPath == null) return;
+
+            if (TargetIsSource) _targetTracks = _docxTracks;
+            else if (File.Exists(_docxTargetPath))
+            {
+                try { _targetTracks = DocxScriptService.ExtractTracksShared(_docxTargetPath); }
+                catch (Exception ex) { _targetNote = $"could not read {Path.GetFileName(_docxTargetPath)}: {ex.Message}"; }
+            }
+
+            int marked = 0;
+            foreach (var t in _docxTracks)
+            {
+                var match = _targetTracks.Where(x => x.AudioTrackName == t.AudioTrackName)
+                    .OrderBy(x => x.TrackIndex == t.TrackIndex ? 0 : 1).FirstOrDefault();
+                bool full = match?.ExistingBoundariesMs != null && match.WordCount == t.WordCount;
+                t.ReviewedBoundariesMs = full ? match!.ExistingBoundariesMs : null;
+                t.PartlyMarkedInTarget = !full && match != null && match.ExistingMarkerCount > 0;
+                if (full) marked++;
+            }
+
+            if (_targetNote.Length == 0)
+                _targetNote = File.Exists(_docxTargetPath)
+                    ? $"To Word → {Path.GetFileName(_docxTargetPath)} ({marked}/{_docxTracks.Count} tracks marked)"
+                    : $"To Word → new {Path.GetFileName(_docxTargetPath)}";
+
+            // فهرستِ ترک‌ها علامت‌ها را نشان دهد (Display محاسبه‌ای است، پس دوباره بایند می‌شود)
+            _suppressTrackSelectionEvent = true;
+            int sel = TrackComboBox.SelectedIndex;
+            TrackComboBox.ItemsSource = null;
+            TrackComboBox.ItemsSource = _docxTracks;
+            TrackComboBox.SelectedIndex = sel < _docxTracks.Count ? sel : -1;
+            _suppressTrackSelectionEvent = false;
         }
 
         /// <summary>
@@ -389,6 +480,7 @@ namespace AudioMarkerReview
                 _words = draft.Words;
                 _boundariesMs = draft.BoundariesMs;
                 _scores = draft.Scores;
+                _reviewedMarkersLoaded = false;
                 _selectedMarkerIndices.Clear();
                 _selectionAnchorIndex = null;
                 ResetUndoHistory();
@@ -429,6 +521,8 @@ namespace AudioMarkerReview
         {
             if (_audio == null || string.IsNullOrEmpty(_audioPath) || string.IsNullOrEmpty(_originalText)) return;
             if (_undoStack.Count > 0) return;
+            // 🌟 مارکرهای بازبینی‌شده‌ی سندِ مقصد از پیش‌نویسِ خام بهترند؛ «Load Draft JSON...» هنوز کار می‌کند.
+            if (_reviewedMarkersLoaded) return;
 
             string stem = Path.GetFileNameWithoutExtension(_audioPath);
             string? audioDir = Path.GetDirectoryName(_audioPath);
@@ -945,29 +1039,59 @@ namespace AudioMarkerReview
             }
         }
 
+        /// <summary>
+        /// 🌟 مارکرهای همین ترک را در سندِ مقصد (پیش‌فرض ‎«نامِ سند»_markers.docx) می‌نویسد و بقیه‌ی
+        /// جدول‌ها و مارکرهایشان را دست نمی‌زند؛ پس یک سندِ _markers ترک‌به‌ترک کامل می‌شود و دیگر
+        /// لازم نیست خروجی‌ها دستی در هم ادغام شوند. Shift+کلیک: انتخابِ سندِ مقصدِ دیگر.
+        /// </summary>
         private void ExportDocxButton_Click(object sender, RoutedEventArgs e)
         {
             if (_docxSourcePath == null || _docxTrackIndex < 0)
             {
-                MessageBox.Show(this, "Open a Word document (not a .txt file) first — this exports a new " +
-                    "copy of that same document with markers spliced into the track you're reviewing.",
+                MessageBox.Show(this, "Open a Word document (not a .txt file) first — markers are written into " +
+                    "the track you're reviewing, in that document's _markers copy.",
                     "Nothing to export", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
             try
             {
-                var dlg = new SaveFileDialog
+                string target = _docxTargetPath ?? DefaultTargetFor(_docxSourcePath);
+                if ((Keyboard.Modifiers & ModifierKeys.Shift) != 0)
                 {
-                    Filter = "Word documents|*.docx",
-                    FileName = Path.GetFileNameWithoutExtension(_docxSourcePath) + "_markers.docx",
-                    InitialDirectory = Path.GetDirectoryName(_docxSourcePath),
-                };
-                if (dlg.ShowDialog() != true) return;
+                    var dlg = new SaveFileDialog
+                    {
+                        Title = "Markers document to update (its other tables are kept)",
+                        Filter = "Word documents|*.docx",
+                        FileName = Path.GetFileName(target),
+                        InitialDirectory = Path.GetDirectoryName(target),
+                        OverwritePrompt = false,   // به‌روزرسانی است، نه جایگزینی
+                    };
+                    if (dlg.ShowDialog() != true) return;
+                    target = dlg.FileName;
+                }
 
-                DocxScriptService.ExportWithMarkers(_docxSourcePath, _docxTrackIndex, _words, _boundariesMs, dlg.FileName,
-                    expectedTrackName: _docxTracks[_docxTrackIndex].AudioTrackName);
-                StatusText.Text = $"Saved marked-up Word document to {dlg.FileName} " +
-                                   "(styles/formatting carried over untouched — only markers were added).";
+                string trackName = _docxTracks[_docxTrackIndex].AudioTrackName;
+                var (targetIndex, created) = DocxScriptService.WriteMarkers(_docxSourcePath, target,
+                    _docxTrackIndex, trackName, _words, _boundariesMs);
+
+                _docxTargetPath = target;
+                if (TargetIsSource)
+                {
+                    // خودِ سندِ باز‌شده عوض شد؛ فهرستِ ترک‌ها از نو خوانده می‌شود (متنِ تمیز همان است)
+                    _docxTracks = DocxScriptService.ExtractTracksShared(_docxSourcePath);
+                }
+                RefreshTargetTracks();
+                // حالا مارکرهای این ترک در سندِ مقصد ثبت شده‌اند؛ پیش‌نویسِ خودکار دیگر رویشان نمی‌نشیند
+                _reviewedMarkersLoaded = true;
+
+                UpdateStatus();
+                StatusText.Text = $"{(created ? "Created" : "Updated")} {Path.GetFileName(target)}: table {targetIndex + 1} " +
+                                  $"\"{trackName}\" now has {_boundariesMs.Count} markers. Other tables untouched" +
+                                  (created ? "." : $"; previous version kept as {Path.GetFileName(target)}.bak.");
+            }
+            catch (DocumentLockedException ex)
+            {
+                MessageBox.Show(this, ex.Message, "Document is open", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
             catch (Exception ex)
             {
@@ -991,7 +1115,8 @@ namespace AudioMarkerReview
                 ? "No files loaded yet."
                 : $"{sourceInfo}Audio: {Path.GetFileName(_audioPath)} ({_audio.DurationSeconds:0.0}s)  |  " +
                   $"Words: {_words.Count}  |  Low-confidence: {lowConf}" +
-                  (string.IsNullOrEmpty(_draftNote) ? "" : $"  |  {_draftNote}");
+                  (string.IsNullOrEmpty(_draftNote) ? "" : $"  |  {_draftNote}") +
+                  (string.IsNullOrEmpty(_targetNote) ? "" : $"  |  {_targetNote}");
         }
     }
 
