@@ -64,6 +64,8 @@ namespace AudioMarkerReview
 
         // ---- undo / redo (boundariesMs snapshots, one per completed edit) ------
         private readonly Stack<List<int>> _undoStack = new();
+        /// <summary>Status-bar note about the draft JSON (auto-loaded / not found / mismatch).</summary>
+        private string _draftNote = "";
         private readonly Stack<List<int>> _redoStack = new();
         private const int MaxUndoDepth = 100;
 
@@ -111,6 +113,9 @@ namespace AudioMarkerReview
                 // A document can hold many tracks — now that we know which audio file is
                 // being reviewed, jump to the table whose caption names it.
                 TryAutoSelectTrackForAudio(announce: true);
+                // align_engine writes <audio>_draft.json into <audio folder>\output — pick it
+                // up by itself instead of asking for "Load Draft JSON..." every time.
+                TryAutoLoadDraft();
 
                 EnsureBoundariesInitialized();
                 RebuildWaveform();
@@ -143,6 +148,7 @@ namespace AudioMarkerReview
                 _suppressTrackSelectionEvent = false;
 
                 LoadOriginalText(File.ReadAllText(dlg.FileName));
+                TryAutoLoadDraft();
             }
             catch (Exception ex)
             {
@@ -191,6 +197,7 @@ namespace AudioMarkerReview
                 // one; otherwise show track 1 and re-match as soon as audio arrives.
                 if (!TryAutoSelectTrackForAudio(announce: true))
                     SelectTrack(0);
+                TryAutoLoadDraft();
             }
             catch (Exception ex)
             {
@@ -213,6 +220,7 @@ namespace AudioMarkerReview
             if (_suppressTrackSelectionEvent || TrackComboBox.SelectedIndex < 0) return;
             _trackMatchNote = "chosen manually";
             LoadDocxTrack(TrackComboBox.SelectedIndex);
+            TryAutoLoadDraft();
         }
 
         private void AutoMatchCheckBox_Changed(object sender, RoutedEventArgs e)
@@ -297,6 +305,7 @@ namespace AudioMarkerReview
             _words = new List<string>();
             _boundariesMs = new List<int>();
             _scores = new List<double>();
+            _draftNote = "";
             LoadOriginalText(_docxTracks[index].FullText);
         }
 
@@ -329,11 +338,24 @@ namespace AudioMarkerReview
         private void LoadDraftButton_Click(object sender, RoutedEventArgs e)
         {
             var dlg = new OpenFileDialog { Filter = "Draft JSON|*.json|All files|*.*" };
+            string? guessDir = DraftFolderFor(_audioPath);
+            if (guessDir != null && Directory.Exists(guessDir)) dlg.InitialDirectory = guessDir;
             if (dlg.ShowDialog() != true) return;
+            LoadDraftFile(dlg.FileName, interactive: true);
+        }
 
+        /// <summary>
+        /// Loads one *_draft.json (align_engine output). interactive=true is the "Load Draft
+        /// JSON..." button: errors and word-count warnings are shown and the draft is loaded
+        /// anyway. interactive=false is the automatic pick-up: it stays silent and refuses a
+        /// draft whose word count doesn't match the loaded text (it belongs to another track
+        /// or an older version of the text). Returns true when the draft was loaded.
+        /// </summary>
+        private bool LoadDraftFile(string path, bool interactive)
+        {
             try
             {
-                var json = File.ReadAllText(dlg.FileName);
+                var json = File.ReadAllText(path);
                 var opts = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
                 var draft = JsonSerializer.Deserialize<DraftAlignment>(json, opts)
                             ?? throw new InvalidDataException("Empty or invalid draft JSON.");
@@ -350,6 +372,12 @@ namespace AudioMarkerReview
                     var textWords = MarkerTextBuilder.SplitWords(_originalText);
                     if (textWords.Count != draft.Words.Count)
                     {
+                        if (!interactive)
+                        {
+                            _draftNote = $"{Path.GetFileName(path)} NOT loaded: {draft.Words.Count} words vs {textWords.Count} in the text";
+                            UpdateStatus();
+                            return false;
+                        }
                         MessageBox.Show(this,
                             $"The loaded text has {textWords.Count} words but this draft has " +
                             $"{draft.Words.Count}. Loading it anyway, but export will fail until " +
@@ -364,15 +392,61 @@ namespace AudioMarkerReview
                 _selectedMarkerIndices.Clear();
                 _selectionAnchorIndex = null;
                 ResetUndoHistory();
+                _draftNote = $"draft: {Path.GetFileName(path)}" + (interactive ? "" : " (auto)");
 
                 RebuildWaveform();
                 RebuildWordPanel();
                 UpdateStatus();
+                return true;
             }
             catch (Exception ex)
             {
-                MessageBox.Show(this, $"Could not load draft JSON:\n{ex.Message}", "Error",
-                    MessageBoxButton.OK, MessageBoxImage.Error);
+                if (interactive)
+                    MessageBox.Show(this, $"Could not load draft JSON:\n{ex.Message}", "Error",
+                        MessageBoxButton.OK, MessageBoxImage.Error);
+                else
+                    _draftNote = $"{Path.GetFileName(path)} could not be read: {ex.Message}";
+                UpdateStatus();
+                return false;
+            }
+        }
+
+        /// <summary>Where align_engine puts the drafts by default: &lt;audio folder&gt;\output.</summary>
+        private static string? DraftFolderFor(string? audioPath)
+        {
+            if (string.IsNullOrEmpty(audioPath)) return null;
+            string? dir = Path.GetDirectoryName(audioPath);
+            return dir == null ? null : Path.Combine(dir, "output");
+        }
+
+        /// <summary>
+        /// Once both the audio and its text are loaded, looks for &lt;audio name&gt;_draft.json
+        /// in &lt;audio folder&gt;\output (align_engine's default) and then next to the audio,
+        /// and loads it silently. Never replaces markers you have already moved (undo history
+        /// not empty) — use "Load Draft JSON..." for that.
+        /// </summary>
+        private void TryAutoLoadDraft()
+        {
+            if (_audio == null || string.IsNullOrEmpty(_audioPath) || string.IsNullOrEmpty(_originalText)) return;
+            if (_undoStack.Count > 0) return;
+
+            string stem = Path.GetFileNameWithoutExtension(_audioPath);
+            string? audioDir = Path.GetDirectoryName(_audioPath);
+            if (audioDir == null) return;
+            var candidates = new[]
+            {
+                Path.Combine(audioDir, "output", stem + "_draft.json"),
+                Path.Combine(audioDir, stem + "_draft.json"),
+            };
+            foreach (var candidate in candidates)
+            {
+                if (File.Exists(candidate) && LoadDraftFile(candidate, interactive: false))
+                    return;
+            }
+            if (!candidates.Any(File.Exists))
+            {
+                _draftNote = "no draft found — run align_engine for this track, or use Load Draft JSON...";
+                UpdateStatus();
             }
         }
 
@@ -916,7 +990,8 @@ namespace AudioMarkerReview
             StatusText.Text = _audio == null
                 ? "No files loaded yet."
                 : $"{sourceInfo}Audio: {Path.GetFileName(_audioPath)} ({_audio.DurationSeconds:0.0}s)  |  " +
-                  $"Words: {_words.Count}  |  Low-confidence: {lowConf}";
+                  $"Words: {_words.Count}  |  Low-confidence: {lowConf}" +
+                  (string.IsNullOrEmpty(_draftNote) ? "" : $"  |  {_draftNote}");
         }
     }
 
