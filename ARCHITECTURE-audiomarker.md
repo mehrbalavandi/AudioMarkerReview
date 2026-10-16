@@ -50,6 +50,7 @@ CustomLayoutGenerator ──► StartMs/EndMs روی هر SpanData ──► ا�
 |---|---|---|
 | `MainWindow.xaml` + `.cs` | 107 + 918 | کلِ رابطِ کاربری و منطقِ تعامل. |
 | `Services/DocxScriptService.cs` | 396 | خواندنِ ترک‌ها (و مارکرهای موجود) از ورد و **نوشتنِ مارکرها** در سندِ _markers. |
+| `Services/AudioFilePicker.cs` | 336 | پنجره‌ی «Open Audio»: در پوشه‌ی فایلِ جاری باز می‌شود و تا همان فایل اسکرول و انتخابش می‌کند (IFileOpenDialog + IShellView.SelectItem؛ در صورتِ شکست، پنجره‌ی معمولی). |
 | `Services/TrackMatcher.cs` | 314 | تشخیصِ خودکارِ اینکه این فایلِ صوتی به کدام جدول می‌خورد. |
 | `Services/MarkerTextBuilder.cs` | 105 | ساختنِ متنِ نهایی با مارکرهای زمانی. |
 | `Services/WaveformRenderer.cs` | 103 | دیکدِ صوت + ساختِ شکلِ موج. |
@@ -63,7 +64,7 @@ CustomLayoutGenerator ──► StartMs/EndMs روی هر SpanData ──► ا�
 
 بزرگ است ولی گروه‌های مشخصی دارد:
 
-**بارگذاری** — `OpenAudioButton_Click`، `OpenTextButton_Click`،
+**بارگذاری** — `OpenAudioButton_Click` (با `AudioFilePicker`)، `OpenTextButton_Click`،
 `OpenDocxButton_Click`، `LoadDraftButton_Click`. هر ترتیبی که فایل‌ها را باز
 کنید کار می‌کند.
 

@@ -97,16 +97,17 @@ namespace AudioMarkerReview
 
         private void OpenAudioButton_Click(object sender, RoutedEventArgs e)
         {
-            var dlg = new OpenFileDialog { Filter = "Audio files|*.mp3;*.wav;*.m4a;*.flac|All files|*.*" };
-            if (dlg.ShowDialog() != true) return;
+            // 🌟 در پوشه‌ی فایلِ جاری باز می‌شود و تا خودِ آن اسکرول می‌کند (↓ + Enter = فایلِ بعدی)
+            string? picked = AudioFilePicker.Pick(this, _audioPath);
+            if (picked == null) return;
 
             try
             {
                 CleanupPlayback();
-                _audio = AudioLoader.Load(dlg.FileName);
-                _audioPath = dlg.FileName;
+                _audio = AudioLoader.Load(picked);
+                _audioPath = picked;
 
-                _playbackReader = new AudioFileReader(dlg.FileName);
+                _playbackReader = new AudioFileReader(picked);
                 _soundTouch = new SoundTouchWaveProvider(_playbackReader);
                 _soundTouch.OptimizeForSpeech();
                 ApplyCurrentSpeedSelection();
