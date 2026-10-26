@@ -93,12 +93,13 @@ namespace AudioMarkerReview.Services
 
             var tracks = new List<DocxTrackInfo>();
             var numberedStyles = NumberedStyleIds(doc.MainDocumentPart!);
+            var listMarkers = ListMarkers(doc.MainDocumentPart!, body);
             int index = 0;
             foreach (var table in FindQualifyingTables(body))
             {
                 var rows = table.Elements<TableRow>().ToList();
                 string trackName = rows[0].InnerText.Trim();
-                string rawText = FlattenRow1Text(rows[1], numberedStyles, out _, out var listTokens);
+                string rawText = FlattenRow1Text(rows[1], numberedStyles, listMarkers, out _, out var listTokens);
                 var (fullText, existing, markerCount) = ParseExistingMarkers(rawText, listTokens);
                 tracks.Add(new DocxTrackInfo
                 {
@@ -160,15 +161,16 @@ namespace AudioMarkerReview.Services
                     targetIndex = ResolveTargetTable(qualifying, trackIndex, expectedTrackName, fullTarget);
                     var rows = qualifying[targetIndex].Elements<TableRow>().ToList();
                     var numberedStyles = NumberedStyleIds(doc.MainDocumentPart!);
+                    var listMarkers = ListMarkers(doc.MainDocumentPart!, body);
 
                     // ۱) مارکرهای قبلیِ همین جدول برداشته می‌شوند (ترکی که دوباره بازبینی شده).
                     //    روی متنِ کلِ ردیف پیدا می‌شوند، چون Word گاهی یک «[1234]» را میانِ دو Run می‌شکند.
-                    string rawBefore = FlattenRow1Text(rows[1], numberedStyles, out var runsBefore, out _);
+                    string rawBefore = FlattenRow1Text(rows[1], numberedStyles, listMarkers, out var runsBefore, out _);
                     if (CountMsMarkers(rawBefore) >= MinMarkersToTreatAsMarked || HasClockMarkers(rawBefore))
                         RemoveRanges(runsBefore, AnyMarkerRegex.Matches(rawBefore).Select(m => (m.Index, m.Length)).ToList());
 
                     // ۲) متنِ تمیز باید همان کلمه‌هایی را داشته باشد که بازبینی شده‌اند.
-                    string fullText = FlattenRow1Text(rows[1], numberedStyles, out var textRuns, out var listTokens);
+                    string fullText = FlattenRow1Text(rows[1], numberedStyles, listMarkers, out var textRuns, out var listTokens);
                     var literal = AnyMarkerRegex.Match(fullText);
                     if (literal.Success)
                         throw new InvalidOperationException(
@@ -185,13 +187,13 @@ namespace AudioMarkerReview.Services
                     var insertions = MarkerTextBuilder.ComputeInsertions(fullText, words, boundariesMs);
                     foreach (var (offset, marker) in insertions.OrderByDescending(i => i.Offset))
                     {
-                        // 🌟 A-4: مارکرهای دورِ «#» (شماره‌ی خودکارِ لیست) در متن جایی ندارند؛ سرِ اولین
-                        // Runِ همان بند نوشته می‌شوند: «[پیش‌از#][پس‌از#]Our». ترتیب درست می‌ماند چون
-                        // درج از آفستِ بزرگ‌تر شروع می‌شود و هر دو روی localOffset = 0 می‌نشینند.
-                        int listToken = listTokens.FindIndex(t => offset >= t && offset <= t + ListNumberToken.Length);
+                        // 🌟 A-4: مارکرهای دورِ کلمه‌ی شماره‌ی خودکارِ لیست («#» یا «1:») در متن جایی
+                        // ندارند؛ سرِ اولین Runِ همان بند نوشته می‌شوند: «[پیش‌از#][پس‌از#]Our». ترتیب
+                        // درست می‌ماند چون درج از آفستِ بزرگ‌تر شروع می‌شود و هر دو روی localOffset = 0 می‌نشینند.
+                        int listToken = listTokens.FindIndex(t => offset >= t.Offset && offset <= t.Offset + t.Token.Length);
                         if (listToken >= 0)
                         {
-                            int after = listTokens[listToken] + ListNumberToken.Length;
+                            int after = listTokens[listToken].Offset + listTokens[listToken].Token.Length;
                             var first = textRuns.FirstOrDefault(r => r.StartOffset >= after)
                                         ?? throw new InvalidOperationException("No text after a list number to insert its marker into.");
                             first.Element.Text = (first.Element.Text ?? "").Insert(0, marker);
@@ -255,13 +257,14 @@ namespace AudioMarkerReview.Services
         /// مرزها کامل‌اند وقتی دقیقاً یک [ms] پیشِ کلمه‌ی اول و یکی پسِ هر کلمه باشد — همان شکلی که
         /// <see cref="MarkerTextBuilder.ComputeInsertions"/> می‌نویسد.
         ///
-        /// 🌟 A-4: «#»ِ شماره‌ی خودکارِ لیست (<paramref name="listTokenRawStarts"/>، آفست در متنِ خام) در
-        /// Word متن ندارد، پس مارکرهایش سرِ اولین کلمه‌ی همان بند نوشته شده‌اند («# [a][b]Our»)؛ هر جایی
-        /// بینِ پایانِ «#» و شروعِ کلمه‌ی واقعیِ بعدی پذیرفته می‌شود. سندی که پیش از A-4 مارک خورده
-        /// مارکرِ «#» را ندارد: «#» طولِ صفر می‌گیرد (همان مرزِ قبلی) و ترک باز هم «مارک‌خورده» است.
+        /// 🌟 A-4: کلمه‌ی شماره‌ی خودکارِ لیست («#» یا در A-4b خودِ شماره‌ی عددی مثلِ «1:»؛
+        /// <paramref name="listTokenRawStarts"/>، آفست در متنِ خام) در Word متن ندارد، پس مارکرهایش
+        /// سرِ اولین کلمه‌ی همان بند نوشته شده‌اند («# [a][b]Our»)؛ هر جایی بینِ پایانِ آن و شروعِ کلمه‌ی
+        /// واقعیِ بعدی پذیرفته می‌شود. سندی که پیش از A-4 مارک خورده مارکرِ آن را ندارد: طولِ صفر
+        /// می‌گیرد (همان مرزِ قبلی) و ترک باز هم «مارک‌خورده» است.
         /// </summary>
         public static (string Clean, List<int>? Boundaries, int MarkerCount) ParseExistingMarkers(
-            string raw, IReadOnlyList<int>? listTokenRawStarts = null)
+            string raw, IReadOnlyList<(int Offset, string Token)>? listTokenRawStarts = null)
         {
             int msCount = CountMsMarkers(raw);
             bool clock = HasClockMarkers(raw);
@@ -283,15 +286,15 @@ namespace AudioMarkerReview.Services
             sb.Append(raw, last, raw.Length - last);
             string clean = sb.ToString();
 
-            // آفستِ «#»ها در متنِ تمیز
-            var listStarts = new HashSet<int>();
-            foreach (int rs in listTokenRawStarts ?? Array.Empty<int>())
-                listStarts.Add(rs - removed.Where(r => r.RawIndex < rs).Sum(r => r.Length));
+            // آفستِ کلمه‌های شماره‌ی لیست در متنِ تمیز
+            var listStarts = new Dictionary<int, string>();
+            foreach (var (rs, token) in listTokenRawStarts ?? Array.Empty<(int, string)>())
+                listStarts[rs - removed.Where(r => r.RawIndex < rs).Sum(r => r.Length)] = token;
 
             var tokens = TokenRegex.Matches(clean);
             if (tokens.Count == 0 || markers.Any(x => !x.IsMs))
                 return (clean, null, markers.Count);
-            bool IsList(int i) => listStarts.Contains(tokens[i].Index) && tokens[i].Value == ListNumberToken;
+            bool IsList(int i) => listStarts.TryGetValue(tokens[i].Index, out var lt) && tokens[i].Value == lt;
             int NextRealStart(int i)
             {
                 for (int k = i + 1; k < tokens.Count; k++)
@@ -376,10 +379,43 @@ namespace AudioMarkerReview.Services
         }
 
         /// <summary>
-        /// 🌟 A-4: جای شماره‌ی خودکارِ لیستِ Word در متنِ تخت‌شده. align_engine
-        /// (speech_text.LIST_NUMBER_TOKEN) و CustomLayoutGenerator هم همین را دارند.
+        /// 🌟 A-4: جای شماره‌ی خودکارِ لیستِ Word در متنِ تخت‌شده وقتی شماره <b>عددی نیست</b> (بولت،
+        /// «A:»، «iv.») — گفته‌نشده. align_engine (speech_text.LIST_NUMBER_TOKEN) و CustomLayoutGenerator
+        /// هم همین را دارند. شماره‌ی عددی خودش نوشته می‌شود (<see cref="ListNumberWord"/>، A-4b).
         /// </summary>
         public const string ListNumberToken = "#";
+
+        /// <summary>
+        /// 🌟 A-4b: کلمه‌ای که جای شماره‌ی خودکارِ لیست می‌نشیند. شماره‌ی عددی («1:»، «2.»، «3») خودِ
+        /// همان شماره است (بی‌فاصله) و گفته‌شده است — گوینده «One.» را می‌گوید و align_engine آن را
+        /// مثلِ هر کلمه تراز می‌کند؛ هر چیزِ دیگر «#» است. عیناً speech_text.list_number_token.
+        /// </summary>
+        public static string ListNumberWord(string? marker)
+        {
+            if (!string.IsNullOrEmpty(marker) && marker.Any(char.IsDigit))
+            {
+                string token = Regex.Replace(marker, @"\s+", "");
+                if (token.Length > 0) return token;
+            }
+            return ListNumberToken;
+        }
+
+        /// <summary>
+        /// 🌟 A-4b: شماره‌ای که Word برای هر بندِ لیست می‌کشد، روی کلِ سند به ترتیب (بندهای خالی هم
+        /// شمرده می‌شوند — Word هم می‌شمارد). همان قاعده‌ی NumberingResolverِ CustomLayoutGenerator و
+        /// docx_tracks.ListNumberingِ align_engine.
+        /// </summary>
+        private static Dictionary<Paragraph, string> ListMarkers(MainDocumentPart mainPart, Body body)
+        {
+            var numbering = new ListNumbering(mainPart);
+            var map = new Dictionary<Paragraph, string>();
+            foreach (var p in body.Descendants<Paragraph>())
+            {
+                string? m = numbering.Next(p);
+                if (m != null) map[p] = m;
+            }
+            return map;
+        }
 
         /// <summary>
         /// 🌟 A-4: استایل‌های پاراگرافی که خودشان numPr با numId غیرِ صفر دارند (بی زنجیره‌ی basedOn؛
@@ -409,15 +445,17 @@ namespace AudioMarkerReview.Services
 
         /// <summary>Concatenates row[1]'s paragraph/run text (paragraph breaks -> "\n",
         /// &lt;w:br/&gt; -> " "), and records each real Text node's offset range for splicing.
-        /// 🌟 A-4: a list paragraph with text starts with "# " (<see cref="ListNumberToken"/>, the
-        /// automatic number Word draws); <paramref name="listTokens"/> gets each "#"'s offset. It has
-        /// no Text node — markers around it go to the start of the paragraph's first run.</summary>
+        /// 🌟 A-4: a list paragraph with text starts with one word for the automatic number Word
+        /// draws (<see cref="ListNumberWord"/>: "1:" when numeric, else "#"); <paramref name="listTokens"/>
+        /// gets each one's offset and text. It has no Text node — markers around it go to the start of
+        /// the paragraph's first run.</summary>
         private static string FlattenRow1Text(TableRow row1, HashSet<string> numberedStyles,
-            out List<TextRunRef> textRuns, out List<int> listTokens)
+            Dictionary<Paragraph, string> listMarkers,
+            out List<TextRunRef> textRuns, out List<(int Offset, string Token)> listTokens)
         {
             var sb = new StringBuilder();
             var runs = new List<TextRunRef>();
-            var tokens = new List<int>();
+            var tokens = new List<(int Offset, string Token)>();
 
             foreach (var cell in row1.Elements<TableCell>())
             {
@@ -427,8 +465,10 @@ namespace AudioMarkerReview.Services
                         .Any(t => !string.IsNullOrWhiteSpace(t.Text));
                     if (hasText && IsListParagraph(paragraph, numberedStyles))
                     {
-                        tokens.Add(sb.Length);
-                        sb.Append(ListNumberToken).Append(' ');
+                        // A-4b: شماره‌ی عددی خودش («1:»، گفته‌شده)، وگرنه «#» (گفته‌نشده)
+                        string token = ListNumberWord(listMarkers.TryGetValue(paragraph, out var lm) ? lm : null);
+                        tokens.Add((sb.Length, token));
+                        sb.Append(token).Append(' ');
                     }
                     foreach (var run in paragraph.Elements<Run>())
                     {

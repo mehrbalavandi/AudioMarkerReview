@@ -176,16 +176,12 @@ namespace AudioMarkerReview
 
 
             string originalFile = dlg.FileName;
-            // ساخت فایل موقت
-            string tempFile = Path.Combine(
-                Path.GetTempPath(),
-                Guid.NewGuid().ToString() + Path.GetExtension(originalFile));
-            File.Copy(originalFile, tempFile, true);
 
             try
             {
-
-                var tracks = DocxScriptService.ExtractTracks(tempFile);
+                // ساخت فایل موقت: ExtractTracksShared از یک کپیِ موقت می‌خواند (حتی اگر سند در Word باز و
+                // قفل باشد) و کپی را بعد از خواندن پاک می‌کند.
+                var tracks = DocxScriptService.ExtractTracksShared(originalFile);
                 if (tracks.Count == 0)
                 {
                     MessageBox.Show(this,
@@ -219,15 +215,6 @@ namespace AudioMarkerReview
             {
                 MessageBox.Show(this, $"Could not read Word document:\n{ex.Message}", "Error",
                     MessageBoxButton.OK, MessageBoxImage.Error);
-            }
-
-            finally
-            {
-                // حذف فایل موقت
-                if (File.Exists(tempFile))
-                {
-                    File.Delete(tempFile);
-                }
             }
         }
 
